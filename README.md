@@ -1,5 +1,12 @@
 # serverless-integration-demo
+```
+Note:
+      Your email address to be used to send out dummy emails from EventBridge rule & scheduler will need to be added and then validated 
+      from AWS Console --> Amazon SES --> Verified Identities. 
+      Before validation completes, the Lambda function sending email shall fail.
+      Also need to change the hard coded SENDER and RECIPIENT values in the Lambda Function "serverless-integration-demo-LambdaDemoEmail-xxxxxx"
 
+```
 This project contains source code and supporting files for a serverless application that you can deploy with the SAM CLI. It includes the following files and folders:
 
 - functions - Code for the application's Lambda functions to check the value of, buy, or sell shares of a stock.

@@ -40,9 +40,9 @@
     },
     "DynamoDB Record": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Resource": "${DDBPutItem}",
       "Parameters": {
-        "TableName": "${TableDemoPayroll}",
+        "TableName": "${DDBTable}",
         "Item": {
           "id": {
             "S.$": "States.UUID()"

@@ -5,12 +5,28 @@ Description: >
 
   Sample SAM Template for serverless-integration-demo
 
+Parameters:
+  yourEmail:
+    Type: String
+    Default:  youremail@yourdomain.com
+    Description: >
+      Your email address to be used to send out dummy emails from EventBridge rule & scheduler. 
+      Need to add and then validate it from AWS Console --> Amazon SES --> Verified Identities. 
+      Before validation completes, the Lambda function sending email shall fail.
+      Also need to change the hard coded SENDER and RECIPIENT values in the Lambda Function "serverless-integration-demo-LambdaDemoEmail-xxxxxx"
+
 Resources:
 
   demoEventBus:
       Type: "AWS::Events::EventBus"
       Properties:
           Name: "demo-eventbus"
+
+  # SESEmailIdentity:   # there are regions that do not support this resource type yet, then you'll get deploy error "Template format error: Unrecognized resource types"
+  #     Type: AWS::SES::EmailIdentity
+  #     Properties:
+  #         EmailIdentity: !Ref yourEmail
+
 
   RuleNewHireRole:
     Type: 'AWS::IAM::Role'
@@ -186,6 +202,10 @@ Resources:
       CodeUri: functions/demo-send-email/
       Handler: app.lambda_handler
       Runtime: python3.9
+      Policies:
+        - AmazonSESFullAccess
+
+
 
   StepFunDemoIT: #demo-directory-steps
     Type: AWS::Serverless::StateMachine
@@ -241,7 +261,7 @@ Resources:
       DefinitionUri: statemachine/demo-payroll-steps.asl.json
       DefinitionSubstitutions:
         demoPayrollFunctionArn: !GetAtt LambdaDemoPayroll.Arn
-        #DDBPutItem: !Sub arn:${AWS::Partition}:states:::dynamodb:putItem
+        DDBPutItem: !Sub arn:${AWS::Partition}:states:::dynamodb:putItem
         DDBTable: !Ref TableDemoPayroll
         DemoEventBus: !Ref demoEventBus
       Policies:
@@ -274,8 +294,6 @@ Resources:
     Type: AWS::Serverless::SimpleTable
     Properties:
       TableName: demo-tbl-directory
-
-
 
 Outputs:
   ArnStateMachineDemoHR:

@@ -1,5 +1,9 @@
 import boto3
 from botocore.exceptions import ClientError
+import os
+import logging
+import json
+
 
 def send_email():
     SENDER = "ryanniuu@amazon.com" # must be verified in AWS SES Email
@@ -71,5 +75,20 @@ def send_email():
         print(response['MessageId'])
 
 def lambda_handler(event, context):
+    # Get the value of the LAMBDA_LOG_LEVEL environment variable
+    log_level = os.environ.get('LAMBDA_LOG_LEVEL', 'INFO')
+
+    # Configure the logger
+    logger = logging.getLogger()
+    logger.setLevel(log_level)
+
+    # Your code goes here
+    # logger.debug('This is a debug message')
+    # logger.info('This is an info message')
+    # logger.warning('This is a warning message')
+    # logger.error('This is an error message')
+    #logger.debug('Event: %s' % json.dumps(event))
+    print(json.dumps(event))
+
     # TODO implement
     send_email()
