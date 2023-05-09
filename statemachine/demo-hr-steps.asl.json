@@ -1,0 +1,106 @@
+{
+    "Comment": "A description of my state machine",
+    "StartAt": "Call Lambda demo-hr-new-worker",
+    "States": {
+      "Call Lambda demo-hr-new-worker": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "Payload.$": "$",
+          "FunctionName": "${demoHRFunctionArn}"
+        },
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "Lambda.ServiceException",
+              "Lambda.AWSLambdaException",
+              "Lambda.SdkClientException",
+              "Lambda.TooManyRequestsException"
+            ],
+            "IntervalSeconds": 2,
+            "MaxAttempts": 6,
+            "BackoffRate": 2
+          }
+        ],
+        "Next": "Choice",
+        "InputPath": "$.detail",
+        "OutputPath": "$.Payload"
+      },
+      "Choice": {
+        "Type": "Choice",
+        "Choices": [
+          {
+            "Not": {
+              "Variable": "$.statusCode",
+              "NumericEquals": 200
+            },
+            "Next": "Fail"
+          }
+        ],
+        "Default": "Parallel"
+      },
+      "Parallel": {
+        "Type": "Parallel",
+        "Next": "Success",
+        "Branches": [
+          {
+            "StartAt": "DynamoDB Records",
+            "States": {
+              "DynamoDB Records": {
+                "Type": "Task",
+                "Resource": "${DDBPutItem}",
+                "Parameters": {
+                  "TableName": "${DDBTable}",
+                  "Item": {
+                    "id": {
+                      "S.$": "States.UUID()"
+                    },
+                    "first_name": {
+                      "S.$": "$.first_name"
+                    },
+                    "last_name": {
+                      "S.$": "$.last_name"
+                    },
+                    "personal_email": {
+                      "S.$": "$.personal_email"
+                    },
+                    "employee_no": {
+                      "S.$": "$.employee_no"
+                    }
+                  }
+                },
+                "ResultPath": "$.output",
+                "End": true
+              }
+            }
+          },
+          {
+            "StartAt": "Call Step Function demo-payroll-steps",
+            "States": {
+              "Call Step Function demo-payroll-steps": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::states:startExecution.sync:2",
+                "Parameters": {
+                  "StateMachineArn": "${demoPayrollStepFunctionArn}",
+                  "Input": {
+                    "first_name.$": "$.first_name",
+                    "last_name.$": "$.last_name",
+                    "personal_email.$": "$.personal_email",
+                    "employee_no.$": "$.employee_no",
+                    "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+                  }
+                },
+                "End": true
+              }
+            }
+          }
+        ]
+      },
+      "Fail": {
+        "Type": "Fail"
+      },
+      "Success": {
+        "Type": "Succeed"
+      }
+    }
+  }

@@ -1,0 +1,283 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  serverless-integration-demo
+
+  Sample SAM Template for serverless-integration-demo
+
+Resources:
+
+  demoEventBus:
+      Type: "AWS::Events::EventBus"
+      Properties:
+          Name: "demo-eventbus"
+
+  RuleNewHireRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /service-role/
+      Policies:
+        - PolicyName: allowRuleNewHireTriggerStepFunctions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource: 
+                  - !Ref StepFunDemoHR
+                  - !Ref StepFunDemoIT
+                        
+
+  RuleOnboardedRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /service-role/
+      # Policies:
+      #   - PolicyName: "Amazon-EventBridge-Onboarded-Execution-Policy-Lambda-Send-Email"
+      #     PolicyDocument:
+      #       Version: "2012-10-17"
+      #       Statement:
+      #         - Effect: Allow
+      #           Action: "lambda:InvokeFunction"
+      #           Resource: !GetAtt LambdaDemoEmail.Arn
+
+  SchedulerScheduleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/service-role/"
+      RoleName: "Amazon_EventBridge_Scheduler_Role_Lambda_Send_Email"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - scheduler.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      # Policies:
+      #   - PolicyName: "Amazon-EventBridge-Scheduler-Execution-Policy-Lambda-Send-Email"
+      #     PolicyDocument:
+      #       Version: "2012-10-17"
+      #       Statement:
+      #         - Effect: Allow
+      #           Action: "lambda:InvokeFunction"
+      #           Resource: !GetAtt LambdaDemoEmail.Arn
+
+  EventsRuleNewHire:
+      Type: "AWS::Events::Rule"
+      Properties:
+          Name: "rule-demo-newhire"
+          EventBusName: !Ref demoEventBus
+          EventPattern:
+            detail-type:
+              - NewHire
+          State: "ENABLED"
+          Targets: 
+            - 
+              Arn: !GetAtt StepFunDemoHR.Arn 
+              Id: "targetDemoHRStepFun"
+              RoleArn: !GetAtt RuleNewHireRole.Arn
+            - 
+              Arn: !GetAtt StepFunDemoIT.Arn
+              Id: "targetDemoITFun"
+              RoleArn: !GetAtt RuleNewHireRole.Arn
+   
+
+  EventsRuleOnBoarded:
+      Type: "AWS::Events::Rule"
+      Properties:
+          Name: "rule-demo-onboarded"
+          EventBusName: !Ref demoEventBus
+          EventPattern:
+            source:
+              - builders.demo.2023apj
+            detail-type:
+              - OnBoarded
+          State: "ENABLED"
+          Targets: 
+            - 
+              Arn: !GetAtt LambdaDemoEmail.Arn
+              Id: "targetDemoSendEmail"
+              #RoleArn: !GetAtt RuleOnboardedRole.Arn #RoleArn is not supported for Lambda, which is resource based permissions
+
+  PermissionForEventsRuleOnBoardedToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref LambdaDemoEmail
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt EventsRuleOnBoarded.Arn
+
+  SchedulerSchedule:
+      Type: "AWS::Scheduler::Schedule"
+      Properties:
+          Name: "rule-demo-schedule"
+          Description: ""
+          State: "ENABLED"
+          GroupName: "default"
+          ScheduleExpression: "at(2023-05-01T21:35:00)"
+          ScheduleExpressionTimezone: "Australia/Sydney"
+          FlexibleTimeWindow: 
+              Mode: "OFF"
+          Target: 
+              Arn: !GetAtt LambdaDemoEmail.Arn
+              RetryPolicy: 
+                  MaximumEventAgeInSeconds: 86400
+                  MaximumRetryAttempts: 0
+              RoleArn: !GetAtt SchedulerScheduleRole.Arn  #RoleArn is not supported for Lambda, which is resource based permissions
+
+  PermissionForEventsSchedulerToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref LambdaDemoEmail
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt SchedulerSchedule.Arn
+
+
+  LambdaDemoITLAN: #demo-it-new-lan_id
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: functions/demo-it-new-lan_id/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+
+  LambdaDemoITMail: #demo-it-new-workemail:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/demo-it-new-workemail/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  LambdaDemoHR: #demo-hr-new-worker:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/demo-hr-new-worker/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  LambdaDemoPayroll: #demo-payroll-new-worker:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/demo-payroll-new-worker/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  LambdaDemoEmail: #demo-send-email
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/demo-send-email/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  StepFunDemoIT: #demo-directory-steps
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/demo-directory-steps.asl.json
+      DefinitionSubstitutions:
+        demoFunctionLanArn: !GetAtt LambdaDemoITLAN.Arn
+        demoFunctionMailArn: !GetAtt LambdaDemoITMail.Arn
+        DDBPutItem: !Sub arn:${AWS::Partition}:states:::dynamodb:putItem
+        DDBTable: !Ref TableDemoIT
+      Policies:
+        - CloudWatchPutMetricPolicy: {}
+    Connectors:
+      stepFunctionConnectorIT:
+        Properties:
+          Destination: 
+            - Id: TableDemoIT
+            - Id: LambdaDemoITLAN
+            - Id: LambdaDemoITMail
+          Permissions:
+            - Write
+
+  StepFunDemoHR: #demo-hr-steps
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/demo-hr-steps.asl.json
+      DefinitionSubstitutions:
+        demoHRFunctionArn: !GetAtt LambdaDemoHR.Arn
+        DDBPutItem: !Sub arn:${AWS::Partition}:states:::dynamodb:putItem
+        DDBTable: !Ref TableDemoHR
+        demoPayrollStepFunctionArn: !Ref StepFunDemoPayroll
+      Policies:
+        - CloudWatchPutMetricPolicy: {}
+    Connectors:
+      stepFunctionConnectorHR:
+        Properties:
+          Destination: 
+            - Id: LambdaDemoHR
+          Permissions:
+            - Write
+      stepFunctionConnectorHR2:
+        Properties:
+          Destination: 
+            - Id: TableDemoHR
+            - Id: StepFunDemoPayroll
+          Permissions:
+            - Read
+            - Write
+
+  StepFunDemoPayroll: #demo-payroll-steps
+    Type: AWS::Serverless::StateMachine 
+    Properties:
+      DefinitionUri: statemachine/demo-payroll-steps.asl.json
+      DefinitionSubstitutions:
+        demoPayrollFunctionArn: !GetAtt LambdaDemoPayroll.Arn
+        #DDBPutItem: !Sub arn:${AWS::Partition}:states:::dynamodb:putItem
+        DDBTable: !Ref TableDemoPayroll
+        DemoEventBus: !Ref demoEventBus
+      Policies:
+        - CloudWatchPutMetricPolicy: {}
+        - EventBridgePutEventsPolicy: 
+            EventBusName: 
+              !Ref demoEventBus
+    Connectors:
+      stepFunctionConnectorPayroll:
+        Properties:
+          Destination: 
+            - Id: TableDemoPayroll
+            - Id: demoEventBus
+            - Id: LambdaDemoPayroll
+          Permissions:
+            - Write
+
+
+  TableDemoHR: #demo-tbl-hr
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: demo-tbl-hr
+
+  TableDemoPayroll: #demo-tbl-payroll
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: demo-tbl-payroll
+
+  TableDemoIT:  #demo-tbl-directory
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: demo-tbl-directory
+
+
+
+Outputs:
+  ArnStateMachineDemoHR:
+    Description: "Demo HR State machine ARN"
+    Value: !Ref StepFunDemoHR

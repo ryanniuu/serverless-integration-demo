@@ -1,0 +1,92 @@
+{
+  "Comment": "A description of my state machine",
+  "StartAt": "Call Lambda demo-payroll-new-worker:",
+  "States": {
+    "Call Lambda demo-payroll-new-worker:": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "OutputPath": "$.Payload",
+      "Parameters": {
+        "Payload.$": "$",
+        "FunctionName": "${demoPayrollFunctionArn}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Choice"
+    },
+    "Choice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Not": {
+            "Variable": "$.statusCode",
+            "NumericEquals": 200
+          },
+          "Next": "Fail"
+        }
+      ],
+      "Default": "DynamoDB Record"
+    },
+    "DynamoDB Record": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "${TableDemoPayroll}",
+        "Item": {
+          "id": {
+            "S.$": "States.UUID()"
+          },
+          "first_name": {
+            "S.$": "$.first_name"
+          },
+          "last_name": {
+            "S.$": "$.last_name"
+          },
+          "personal_email": {
+            "S.$": "$.personal_email"
+          },
+          "payroll_no": {
+            "S.$": "$.payroll_no"
+          }
+        }
+      },
+      "Next": "New Event to EventBridge",
+      "ResultPath": "$.DBout"
+    },
+    "New Event to EventBridge": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Detail": {
+              "Message": "New Event from Step Functions!",
+              "personal_email.$": "$.personal_email"
+            },
+            "DetailType": "OnBoarded",
+            "EventBusName": "${DemoEventBus}",
+            "Source": "builders.demo.2023apj"
+          }
+        ]
+      },
+      "Next": "Success"
+    },
+    "Success": {
+      "Type": "Succeed"
+    },
+    "Fail": {
+      "Type": "Fail"
+    }
+  }
+}

@@ -1,0 +1,116 @@
+{
+  "Comment": "A description of my state machine",
+  "StartAt": "Call demo-it-new-lan-id",
+  "States": {
+    "Call demo-it-new-lan-id": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "OutputPath": "$.Payload",
+      "Parameters": {
+        "Payload.$": "$",
+        "FunctionName": "${demoFunctionLanArn}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Test Return Code",
+      "InputPath": "$.detail"
+    },
+    "Test Return Code": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Not": {
+            "Variable": "$.statusCode",
+            "NumericEquals": 200
+          },
+          "Next": "Fail"
+        }
+      ],
+      "Default": "Call demo-it-new-workmail"
+    },
+    "Fail": {
+      "Type": "Fail"
+    },
+    "Call demo-it-new-workmail": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "OutputPath": "$.Payload",
+      "Parameters": {
+        "Payload.$": "$",
+        "FunctionName": "${demoFunctionMailArn}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Test Return Code2"
+    },
+    "Test Return Code2": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Not": {
+            "Variable": "$.statusCode",
+            "NumericEquals": 200
+          },
+          "Next": "Fail (1)"
+        }
+      ],
+      "Default": "DynamoDB Record"
+    },
+    "DynamoDB Record": {
+      "Type": "Task",
+      "Resource": "${DDBPutItem}",
+      "Parameters": {
+        "TableName": "${DDBTable}",
+        "Item": {
+          "id": {
+            "S.$": "States.UUID()"
+          },
+          "first_name": {
+            "S.$": "$.first_name"
+          },
+          "last_name": {
+            "S.$": "$.last_name"
+          },
+          "personal_email": {
+            "S.$": "$.personal_email"
+          },
+          "lan_id": {
+            "S.$": "$.lan_id"
+          },
+          "work_email": {
+            "S.$": "$.work_email"
+          }
+        }
+      },
+      "Next": "Success"
+    },
+    "Fail (1)": {
+      "Type": "Fail"
+    },
+    "Success": {
+      "Type": "Succeed"
+    }
+  }
+}
