@@ -5,15 +5,15 @@ Description: >
 
   Sample SAM Template for serverless-integration-demo
 
-Parameters:
-  yourEmail:
-    Type: String
-    Default:  youremail@yourdomain.com
-    Description: >
-      Your email address to be used to send out dummy emails from EventBridge rule & scheduler. 
-      Need to add and then validate it from AWS Console --> Amazon SES --> Verified Identities. 
-      Before validation completes, the Lambda function sending email shall fail.
-      Also need to change the hard coded SENDER and RECIPIENT values in the Lambda Function "serverless-integration-demo-LambdaDemoEmail-xxxxxx"
+# Parameters:
+#   yourEmail:
+#     Type: String
+#     Default:  youremail@yourdomain.com
+#     Description: >
+#       Your email address to be used to send out dummy emails from EventBridge rule & scheduler. 
+#       Need to add and then validate it from AWS Console --> Amazon SES --> Verified Identities. 
+#       Before validation completes, the Lambda function sending email shall fail.
+#       Also need to change the hard coded SENDER and RECIPIENT values in the Lambda Function "serverless-integration-demo-LambdaDemoEmail-xxxxxx"
 
 Resources:
 
