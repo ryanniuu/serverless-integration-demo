@@ -2,11 +2,12 @@
 
 ## pre-requisite
 There are few pre-requisite steps required which are outside of the demo scope, including
-•	A working AWS account, and sufficient access permissions
-•	A working Github account
-•	A installed and configured Git client
-•	A installed and configured AWS CLI
-•	A installed and configured SAM CLI
+- A working AWS account, and sufficient access permissions
+- A working Github account
+- On your local computer:
+  - An installed and configured Git client
+  - An installed and configured AWS CLI
+  - An installed and configured SAM CLI
 
 
 ```
