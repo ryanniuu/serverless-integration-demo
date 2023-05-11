@@ -1,4 +1,14 @@
 # serverless-integration-demo
+
+## pre-requisite
+There are few pre-requisite steps required which are outside of the demo scope, including
+•	A working AWS account, and sufficient access permissions
+•	A working Github account
+•	A installed and configured Git client
+•	A installed and configured AWS CLI
+•	A installed and configured SAM CLI
+
+
 ```
 Note:
       Your email address to be used to send out dummy emails from EventBridge rule & scheduler will need to be added and then validated 
