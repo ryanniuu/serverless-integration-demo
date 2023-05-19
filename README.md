@@ -18,34 +18,39 @@ Note:
       Also need to change the hard coded SENDER and RECIPIENT values in the Lambda Function "serverless-integration-demo-LambdaDemoEmail-xxxxxx"
 
 ```
+
 This project contains source code and supporting files for a serverless application that you can deploy with the SAM CLI. It includes the following files and folders:
 
 - functions - Code for the application's Lambda functions to check the value of, buy, or sell shares of a stock.
 - statemachines - Definition for the state machine that orchestrates the stock trading workflow.
-- tests - Unit tests for the Lambda functions' application code.
 - template.yaml - A template that defines the application's AWS resources.
 
-This application creates a mock stock trading workflow which runs on a pre-defined schedule (note that the schedule is disabled by default to avoid incurring charges). It demonstrates the power of Step Functions to orchestrate Lambda functions and other AWS resources to form complex and robust workflows, coupled with event-driven development using Amazon EventBridge.
+This application creates below serverless resources to demo the AWS Builders APJ Q3 2023 Session: Build Serverless Application Integrations for your ERP Applications on AWS
+
+### AWS Resources
+- Event Bus "demo-eventbus"
+    - for condition rule "new hire"
+    - for condition rule "onboarded"
+    - for scheduling scheduler
+- Step Functions
+    - demo-hr-steps
+    - demo-payroll-steps
+    - demo-directory-steps
+- Lambda Functions
+    - demo-hr-new-worker
+    - demo-payroll-new-worker
+    - demo-it-new-lan_id
+    - demo-it-new-workemail
+    - demo-send-email
+- DynamoDB Tables
+    - demo-tbl-hr
+    - demo-tbl-payroll
+    - demo-tbl-directory
+
 
 AWS Step Functions lets you coordinate multiple AWS services into serverless workflows so you can build and update apps quickly. Using Step Functions, you can design and run workflows that stitch together services, such as AWS Lambda, AWS Fargate, and Amazon SageMaker, into feature-rich applications.
 
 The application uses several AWS resources, including Step Functions state machines, Lambda functions and an EventBridge rule trigger. These resources are defined in the `template.yaml` file in this project. You can update the template to add AWS resources through the same deployment process that updates your application code.
-
-If you prefer to use an integrated development environment (IDE) to build and test the Lambda functions within your application, you can use the AWS Toolkit. The AWS Toolkit is an open source plug-in for popular IDEs that uses the SAM CLI to build and deploy serverless applications on AWS. The AWS Toolkit also adds a simplified step-through debugging experience for Lambda function code. See the following links to get started:
-
-* [CLion](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [GoLand](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [IntelliJ](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [WebStorm](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [Rider](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [PhpStorm](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [PyCharm](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [RubyMine](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [DataGrip](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [VS Code](https://docs.aws.amazon.com/toolkit-for-vscode/latest/userguide/welcome.html)
-* [Visual Studio](https://docs.aws.amazon.com/toolkit-for-visual-studio/latest/user-guide/welcome.html)
-
-The AWS Toolkit for VS Code includes full support for state machine visualization, enabling you to visualize your state machine in real time as you build. The AWS Toolkit for VS Code includes a language server for Amazon States Language, which lints your state machine definition to highlight common errors, provides auto-complete support, and code snippets for each state, enabling you to build state machines faster.
 
 ## Deploy the sample application
 
@@ -99,16 +104,20 @@ You can find more information and examples about filtering Lambda function logs 
 
 ## Tests
 
-Tests are defined in the `tests` folder in this project. Use PIP to install the test dependencies and run tests.
+Test is via sending a custom event to the Event Bus
+- login AWS console
+- got to EventBridge 
+- drill into the custom event bus "demo-eventbus"
+- click "send event" button
+- put below 
+builders.demo.2023apj
+NewHire
+{
+  "first_name": "Ryan",
+  "last_name": "Niu",
+  "personal_email": "ryanniuu@amazon.com"
+}
 
-```bash
-serverless-integration-demo$ pip install -r tests/requirements.txt --user
-# unit test
-serverless-integration-demo$ python -m pytest tests/unit -v
-# integration test, requiring deploying the stack first.
-# Create the env variable AWS_SAM_STACK_NAME with the name of the stack we are testing
-serverless-integration-demo$ AWS_SAM_STACK_NAME=<stack-name> python -m pytest tests/integration -v
-```
 
 ## Cleanup
 
