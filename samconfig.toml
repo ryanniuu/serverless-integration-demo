@@ -4,7 +4,7 @@ version = 0.1
 
 [default]
 [default.global.parameters]
-stack_name = "serverless-integration-demo"
+stack_name = "oracle-app-admin-toolbox"
 
 [default.build.parameters]
 cached = true
@@ -15,12 +15,13 @@ lint = true
 
 [default.deploy.parameters]
 #capabilities = "CAPABILITY_IAM"
-capabilities = "CAPABILITY_NAMED_IAM"
+#capabilities = "CAPABILITY_NAMED_IAM"
+capabilities = "CAPABILITY_AUTO_EXPAND CAPABILITY_IAM"
 confirm_changeset = true
 resolve_s3 = true
-s3_prefix = "serverless-integration-demo"
-region = "ap-southeast-1"
-#region = "ap-southeast-2"
+s3_prefix = "oracle-app-admin-toolbox"
+#region = "ap-southeast-1"
+region = "ap-southeast-2"
 #region = "ap-southeast-4"
 image_repositories = []
 

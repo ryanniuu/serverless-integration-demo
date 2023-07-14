@@ -1,0 +1,15 @@
+#########################################################################################################################
+#                 apptab - This file holds the information about environment                                            #
+#                          The details provided are case sensitive ensure to enter values with correct case             #
+#                                                                                                                       #
+#                                                                                                                       #
+#                                                                                                                       #
+#                  Format:											        #
+#                         cdbname:pdbname:appndoe:App Base Path                                                         #
+#                                                                                                                       #
+#CERPUAT:ERPUAT:erpapp01.internal:/fh01/ERPUAT                                                                          #
+#CERPUAT:ERPUAT:erpapp02.internal:/fh01/ERPUAT                                                                          #
+#CERPDEV:ERPDEV:erpapp01.internal:/fh01/ERPDEV                                                                          #
+#CERPDEV:ERPDEV:erpapp02.internal:/fh01/ERPDEV                                                                          #
+#########################################################################################################################
+#Enter your environment details here with '#' at the beginning#

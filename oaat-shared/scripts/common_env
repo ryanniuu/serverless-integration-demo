@@ -1,0 +1,18 @@
+#####NEED TO UPDATE THE BELOW VARIABLE VALUE #####
+LOG_S3_BUCKET=s3://erpr12clonerepo-<OPERATIONS-ACCOUNTID>/scripts/logs/
+ERP_DBNODE=<YOUR LOGICAL DATABASE NODE NAME>
+ERP_S3_BUCKET=s3://erpr12clonerepo-<OPERATIONS-ACCOUNTID>/erp/
+ERP_DATA_TOP=<YOUR ORACLE DATAFILE MOUNTPOINT For Example:/oradata>
+#####
+
+SCRIPT_DIR=$HOME/clone_auto
+ERP_CUSTOMTOP_BUCKET=${ERP_S3_BUCKET}customtop/
+
+##Function to Write LogFile
+function message
+{
+TIME=`date`
+echo "$TIME :  ""$1" >> $LOG_FILE
+echo "$TIME :  ""$1"
+aws s3 cp $LOG_FILE $LOG_S3_BUCKET --profile operations 2>&1 > /dev/null
+}

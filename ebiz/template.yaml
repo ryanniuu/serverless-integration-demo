@@ -1,0 +1,83 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Oracle Application Administration Toolbox
+       by the Oracle Applications on AWS team
+
+Resources:
+  LambdaEBSStartApps: 
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/oaat-ebs-StartApps/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  LambdaEBSStartDB: 
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/oaat-ebs-StartDb/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  LambdaEBSStopApps: 
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/oaat-ebs-StopApps/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  LambdaEBSStopDB: 
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/oaat-ebs-StopDb/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+
+
+  # StepFunDemoHR: #demo-hr-steps
+  #   Type: AWS::Serverless::StateMachine
+  #   Properties:
+  #     DefinitionUri: statemachine/demo-hr-steps.asl.json
+  #     DefinitionSubstitutions:
+  #       demoHRFunctionArn: !GetAtt LambdaDemoHR.Arn
+  #       DDBPutItem: !Sub arn:${AWS::Partition}:states:::dynamodb:putItem
+  #       DDBTable: !Ref TableDemoHR
+  #       demoPayrollStepFunctionArn: !Ref StepFunDemoPayroll
+  #     Policies:
+  #       - CloudWatchPutMetricPolicy: {}
+  #   Connectors:
+  #     stepFunctionConnectorHR:
+  #       Properties:
+  #         Destination: 
+  #           - Id: LambdaDemoHR
+  #         Permissions:
+  #           - Write
+  #     stepFunctionConnectorHR2:
+  #       Properties:
+  #         Destination: 
+  #           - Id: TableDemoHR
+  #           - Id: StepFunDemoPayroll
+  #         Permissions:
+  #           - Read
+  #           - Write
+
+#   TableDemoHR: #demo-tbl-hr
+#     Type: AWS::Serverless::SimpleTable
+#     Properties:
+#       TableName: demo-tbl-hr
+
+#   TableDemoPayroll: #demo-tbl-payroll
+#     Type: AWS::Serverless::SimpleTable
+#     Properties:
+#       TableName: demo-tbl-payroll
+
+#   TableDemoIT:  #demo-tbl-directory
+#     Type: AWS::Serverless::SimpleTable
+#     Properties:
+#       TableName: demo-tbl-directory
+
+# Outputs:
+#   ArnStateMachineDemoHR:
+#     Description: "Demo HR State machine ARN"
+#     Value: !Ref StepFunDemoHR

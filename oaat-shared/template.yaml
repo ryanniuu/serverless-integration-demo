@@ -1,0 +1,44 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Oracle Application Administration Toolbox by the Oracle Applications on AWS team
+  the shared resources, such as S3 bucket and scripts
+  
+
+Parameters:
+  BucketName: { Type: String, Default: "oaat-bucket" }
+
+Resources:
+  # oaatAccessLogBucket:
+  #   Type: "AWS::S3::Bucket"
+  #   Properties:
+  #     BucketName: oaatAccessLogs
+  #     AccessControl: LogDeliveryWrite
+
+  oaatBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref BucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      # LoggingConfiguration:
+      #   DestinationBucketName: !Ref oaatAccessLogBucket
+
+  oaatEventBus:
+      Type: "AWS::Events::EventBus"
+      Properties:
+          Name: "oaat-eventbus"
+
+
+Outputs:
+  MainBucketName:
+    Description: Name of the main bucket
+    Value: !Ref oaatBucket
+  # LogBucketName:
+  #   Description: Name of the access log bucket
+  #   Value: !Ref oaatAccessLogBucket
+  EventBusName:
+    Description: Name of the custom event bus created for OAAT
+    Value:  !Ref oaatEventBus

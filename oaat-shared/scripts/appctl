@@ -1,0 +1,518 @@
+#!/bin/ksh
+##############################################################################
+#            APPCTL SCRIPT                                                   #
+#                                                                            #
+#Purpose:                                                                    #
+#       Copy XXC_TOP to S3 bucket                                            #
+#       Genrate Script for Softlink creation                                 #
+#       Stop and Start Application                                           #
+#       Run Autoconfig                                                       #
+##############################################################################
+#set -x
+
+. ./common_env
+
+LOG_FILE=$SCRIPT_DIR/logs/"erp_app_clone_log_"`date +%Y%m%d%H%M`".log"
+EC2_REGION="`aws ec2 describe-availability-zones --output text --query 'AvailabilityZones[0].[RegionName]'`"
+
+
+USAGE="appctl -source_db <SOURCEDB_SID> -target_db <TARGETDB_SID> -action <SOURCE_PREP/TARGET_PREP> -phase <SYNC_CUST/STOP_APPS/START_APPS/AUTOCONFIG/APPSPASSCHG>"
+
+USAGE2="appctl -source_db <SOURCEDB_SID> -target_db <TARGETDB_SID> -action <SOURCE_PREP/TARGET_PREP> -phase <SYNC_CUST/STOP_APPS/START_APPS/AUTOCONFIG/APPSPASSCHG> -srcpass <PASSWORD>"
+
+##Read Arguments Passed
+
+if [ "$1" == "" ] || [ "$2" == "" ] || [ "$3" == "" ] || [ "$4" == "" ] || [ "$5" == "" ] || [ "$6" == "" ] || [ "$7" == "" ] || [ "$8" == "" ]; then
+   message "ERROR: Not all arguments are passed"
+   message "Usage is: $USAGE"
+   echo -n 11
+   exit 11
+else
+   if [ "$8" == "APPSPASSCHG" ]; then
+        if [ "$9" == "" ] || [ "$10" == "" ]; then
+           message "ERROR: Pass the Source APPS Password"
+           message "Usage is: $USAGE2"
+           echo -n 11
+           exit 11
+        fi
+   fi
+   while [ "$1" != "" ]; do
+      case $1 in
+         -source_db)            SOURCE_DB=$2; shift 2;;
+         -target_db)            TARGET_DB=$2; shift 2;;
+         -action)               ACTION=$2;    shift 2;;
+         -phase)                PHASE=$2;     shift 2;;
+         -srcpass)              SRCPASS=$2;   shift 2;;  
+          *)                    message "ERROR: Invalid argument ($1).... exiting."; echo -n 11; exit 11;;
+      esac
+   done
+   if [ $ACTION == 'SOURCE_PREP' ]; then
+     ORACLE_SID=$SOURCE_DB
+   else
+     ORACLE_SID=$TARGET_DB
+   fi
+fi
+
+SOURCE_DIR=`echo $SOURCE_DB| sed 's/db//g'`
+TARGET_DIR=`echo $TARGET_DB| sed 's/db//g'`
+S3BUCKET=${ERP_CUSTOMTOP_BUCKET}
+
+if [ -f apptab ]; then
+ SOURCE_BASE_PATH=`cat apptab | grep -w ${SOURCE_DB} |tail -1 | cut -d':' -f4`
+   if [ ${SOURCE_BASE_PATH} ]; then
+     SOURCEENVFILE=${SOURCE_BASE_PATH}/EBSapps.env
+   else
+     message "ERROR: apptab file does not have complete details of ${SOURCE_DB}"
+     echo -n 11
+     exit 11
+   fi
+
+
+ TARGET_BASE_PATH=`cat apptab | grep -w ${TARGET_DB} |tail -1 | cut -d':' -f4`
+   if [ ${TARGET_BASE_PATH} ]; then
+     TARGETENVFILE=${TARGET_BASE_PATH}/EBSapps.env
+   else
+     message "ERROR: apptab file does not have complete details of ${TARGET_DB}"
+     echo -n 11
+     exit 11
+   fi
+else
+  message "ERROR: apptab file does not exist, check if the file is copied from S3 bucket"
+  echo -n 11
+  exit 11
+fi
+
+if [ $ACTION != 'SOURCE_PREP' ] && [ $ACTION != 'TARGET_PREP' ]; then
+    message "ERROR: action can only be SOURCE_PREP or TARGET_PREP"
+    echo -n 11
+    exit 11
+
+fi
+
+if [ $ACTION == 'SOURCE_PREP' ]; then
+   if [ $PHASE != 'SYNC_CUST' ]; then
+      message "ERROR: SOURCE_PREP action can only have phases SYNC_CUST"
+      echo -n 11
+      exit 11
+   fi
+  if [ -f ${SOURCEENVFILE} ]
+  then
+    . ${SOURCEENVFILE} run
+    status_code=$?
+        if [ $status_code -gt 0 ]; then
+           message "ERROR: Unable to set environment for application $ORACLE_SID"
+           echo -n 11
+           exit 11
+        fi
+  else
+   message "ERROR: Application $ORACLE_SID environment file does not exist in the ${SOURCEENVFILE}"
+   echo -n 11
+   exit 11
+  fi
+fi
+
+if [ $ACTION == 'TARGET_PREP' ]; then
+   if [ $PHASE != 'SYNC_CUST' ] && [ $PHASE != 'STOP_APPS' ] && [ $PHASE != 'START_APPS' ] && [ $PHASE != 'AUTOCONFIG' ] && [ $PHASE != 'APPSPASSCHG' ]
+   then
+      message "ERROR: TARGET_PREP action can only have phases SYNC_CUST/STOP_APPS/START_APPS/AUTOCONFIG/APPSPASSCHG"
+      echo -n 11
+      exit 11
+   fi
+  
+  if [ -f ${TARGETENVFILE} ]
+  then
+
+    PSPARAM=$(aws secretsmanager get-secret-value --secret-id R12-${TARGET_DB}-Secret --query SecretString --region $EC2_REGION | tr -d '"' | tr -d '{' | tr -d '}'| sed 's/\\:/|/g'|sed 's/\\//g'|cut -d'|' -f2)   
+    if [ ! ${PSPARAM} ];
+    then
+      message "ERROR: Could not fetch password from secret R12-${TARGET_DB}-Secret. Check if the Secret is Created with all the required passwords."
+      echo -n 11
+      exit 11
+    fi
+
+
+    SYSPASS=`echo $PSPARAM|cut -d":" -f1`
+
+    if [ ! ${SYSPASS} ];
+    then
+      message "ERROR: Could not fetch system password from secret R12-${TARGET_DB}-Secret. Ensure the system password is store in the 1st position in the secret."
+      echo -n 11
+      exit 11
+    fi
+
+    APPSPASS=`echo $PSPARAM|cut -d":" -f2`
+
+    if [ ! ${APPSPASS} ];
+    then
+      message "ERROR: Could not fetch apps password from secret R12-${TARGET_DB}-Secret. Ensure the apps password is store in the 2nd position in the secret."
+      echo -n 11
+      exit 11
+    fi
+
+
+    SYSADMPASS=`echo $PSPARAM|cut -d":" -f3`
+
+    if [ ! ${SYSADMPASS} ];
+    then
+      message "ERROR: Could not fetch sysadmin password from secret R12-${TARGET_DB}-Secret. Ensure the sysadmin password is store in the 3rd position in the secret."
+      echo -n 11
+      exit 11
+    fi
+
+
+    WLSPASS=`echo $PSPARAM|cut -d":" -f4`
+
+    if [ ! ${WLSPASS} ];
+    then
+      message "ERROR: Could not fetch weblogic password from secret R12-${TARGET_DB}-Secret. Ensure the weblogic password is store in the 4th position in the secret."
+      echo -n 11
+      exit 11
+    fi
+
+
+    . ${TARGETENVFILE} run
+    status_code=$?
+        if [ $status_code -gt 0 ]; then
+           message "ERROR: Unable to set environment for application $ORACLE_SID"
+           echo -n 11
+           exit 11
+        fi
+  else
+   message "ERROR: Application $ORACLE_SID environment file does not exist in the ${TARGETENVFILE}"
+   echo -n 11
+   exit 11
+  fi
+
+fi
+
+function sync_custapps_s3
+{
+
+#set -x
+message "INFO: Copying XXC_TOP to S3 bucket ${S3BUCKET}"
+
+find $XXC_TOP -type l -exec ls -l {} \; | awk '{print "rm "$9}' > $XXC_TOP/remove_link.sh
+find $XXC_TOP -type l -exec ls -l {} \; | awk '{print "ln -s ../../../fnd/12.0.0/bin/fndcpesr "$9}' > $XXC_TOP/add_link.sh
+
+aws s3 sync ${XXC_TOP}/ ${S3BUCKET} --exclude "/data/*" --profile operations 2>&1 & < /dev/null
+
+message "INFO: Copying from XXC_TOP to S3 bucket ${S3BUCKET} Completed."
+}
+
+function sync_s3_custapps
+{
+message "INFO: Copying from S3 bucket ${S3BUCKET} to XXC_TOP"
+#set -x
+aws s3 sync ${S3BUCKET} ${XXC_TOP} --exclude "/data/*" --profile operations 2>&1 < /dev/null
+
+sh $XXC_TOP/remove_link.sh
+sh $XXC_TOP/add_link.sh
+
+message "INFO: Copying from S3 bucket ${S3BUCKET} to XXC_TOP Completed."
+}
+
+function stop_apps
+{
+
+message "INFO: Stopping Application $TARGET_DB"
+
+if [ -f apptab ]; then
+
+NODE=()
+while read line
+do
+ if [ `echo $line | grep -w ${TARGET_DB} | grep -v '#' |wc -l` -gt 0 ]; then
+  NODE+=(`echo $line|cut -d":" -f3`)
+ fi
+done < apptab
+
+nodecount=${#NODE[*]}
+
+for ((i=$nodecount-1; i>=0; --i))
+do
+
+echo $i
+echo ${NODE[$i]}
+
+ssh -T applmgr@${NODE[$i]}<< EOF
+
+if [ -f ${TARGETENVFILE} ]
+then
+
+. ${TARGETENVFILE} run
+
+status_code=$?
+if [ $status_code -gt 0 ]; then
+message "ERROR: Unable to set environment for application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+else
+message "ERROR: Application $ORACLE_SID environment file does not exist in the ${TARGETENVFILE}"
+echo -n 11
+exit 11
+fi
+{ echo apps; echo $APPSPASS; echo $WLSPASS; } | sh \$ADMIN_SCRIPTS_HOME/adstpall.sh -nopromptmsg
+sleep 10
+
+ps -ef|grep applmgr|grep -v grep |grep -v bash|grep -v sshd|grep -v ssh |grep -v "ps -ef"| grep -v appctl | awk '{print \$2}' | tr " " \n > /tmp/killproc
+
+while read prcs
+do
+kill -9 \$prcs
+done < /tmp/killproc
+
+EOF
+done
+message "INFO: Stopped Application $TARGET_DB"
+
+else
+
+message "ERROR: apptab file does not exist, check if the file is copied from S3 bucket"
+echo -n 11
+exit 11
+
+fi
+
+
+}
+
+function start_apps
+{
+
+message "INFO: Starting Application $TARGET_DB"
+
+
+if [ -f apptab ]; then
+
+NODE=()
+while read line
+do
+ if [ `echo $line | grep -w ${TARGET_DB} | grep -v '#' |wc -l` -gt 0 ]; then
+  NODE+=(`echo $line|cut -d":" -f3`)
+ fi
+done < apptab
+
+nodecount=${#NODE[*]}
+
+for ((i=0; i<$nodecount; i++))
+do
+
+ssh -T applmgr@${NODE[$i]}<< EOF
+
+message "INFO: Starting Service on Node ${Node[$i]}"
+
+if [ -f ${TARGETENVFILE} ]
+then
+
+. ${TARGETENVFILE} run
+
+status_code=$?
+if [ $status_code -gt 0 ]; then
+message "ERROR: Unable to set environment for application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+else
+message "ERROR: Application $ORACLE_SID environment file does not exist in the ${TARGETENVFILE}"
+echo -n 11
+exit 11
+fi
+{ echo apps; echo $APPSPASS; echo $WLSPASS; } | sh \$ADMIN_SCRIPTS_HOME/adstrtal.sh -nopromptmsg
+sleep 10
+
+EOF
+done
+
+message "INFO: Started Application $TARGET_DB"
+
+else
+message "ERROR: apptab file does not exist, check if the file is copied from S3 bucket"
+echo -n 11
+exit 11
+
+fi
+
+}
+
+function start_autoconfig
+{
+
+message "INFO: Running Autoconfig on Application $TARGET_DB"
+
+
+if [ -f apptab ]; then
+
+NODE=()
+while read line
+do
+ if [ `echo $line | grep -w ${TARGET_DB} | grep -v '#' | wc -l` -gt 0 ]; then
+  NODE+=(`echo $line|cut -d":" -f3`)
+ fi
+done < apptab
+
+nodecount=${#NODE[*]}
+
+for ((i=0; i<$nodecount; i++))
+do
+
+message "INFO: Running Autoconfig on Node ${Node[$i]}"
+
+ssh -T applmgr@${NODE[$i]}<< EOF
+
+if [ -f ${TARGETENVFILE} ]
+then
+
+. ${TARGETENVFILE} run
+
+status_code=$?
+if [ $status_code -gt 0 ]; then
+message "ERROR: Unable to set environment for application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+else
+message "ERROR: Application $ORACLE_SID environment file ${TARGETENVFILE} does not exist in node ${Node[$i]}"
+echo -n 11
+exit 11
+fi
+#set -x
+{ echo $APPSPASS; } | sh \$ADMIN_SCRIPTS_HOME/adautocfg.sh
+status_code=$?
+if [ $status_code -gt 0 ]; then
+message "ERROR: Failed to run autoconfig on node ${Node[$i]}" 
+echo -n 11
+exit 11
+fi
+
+EOF
+done
+#Connect to first node again to run autoconfig
+
+message "INFO: Running Autoconfig on Node ${Node[$0]} again"
+
+ssh -T applmgr@${NODE[0]}<< EOF
+
+if [ -f ${TARGETENVFILE} ]
+then
+
+. ${TARGETENVFILE} run
+
+status_code=$?
+if [ $status_code -gt 0 ]; then
+message "ERROR: Unable to set environment for application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+else
+message "ERROR: Application $ORACLE_SID environment file ${TARGETENVFILE} does not exist in node ${Node[0]}"
+echo -n 11
+exit 11
+fi
+{ echo $APPSPASS; } | sh \$ADMIN_SCRIPTS_HOME/adautocfg.sh
+
+status_code=$?
+if [ $status_code -gt 0 ]; then
+message "ERROR: Failed to run autoconfig on node ${Node[0]}"
+echo -n 11
+exit 11
+fi
+EOF
+
+message "INFO: Completed Autoconfig on Application $TARGET_DB"
+
+else
+
+message "ERROR: apptab file does not exist, check if the file is copied from S3 bucket"
+echo -n 11
+exit 11
+
+fi
+
+}
+
+function start_passwordchange
+{
+#set -x
+message "INFO: Changing Apps Password For Application $TARGET_DB"
+
+FNDCPASS apps/${SRCPASS} 0 Y system/${SYSPASS} SYSTEM APPLSYS ${APPSPASS} &> /tmp/passchg.log
+status_code=`grep -i ORA /tmp/passchg.log | wc -l`
+if [ $status_code -gt 0 ]; then
+message "ERROR: Unable to rest apps password for application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+
+##Calling Function to Run Autoconfig
+start_autoconfig
+
+FNDCPASS apps/${APPSPASS} 0 Y system/${SYSPASS} ALLORACLE ${APPSPASS} &> /tmp/passchg.log
+status_code=`grep -i ORA /tmp/passchg.log | wc -l`
+if [ $status_code -gt 0 ]; then
+message "ERROR: Unable to rest ALLORACLE password for application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+
+FNDCPASS apps/${APPSPASS} 0 Y system/${SYSPASS} USER SYSADMIN ${SYSADMPASS} &> /tmp/passchg.log
+status_code=`grep -i ORA /tmp/passchg.log | wc -l`
+if [ $status_code -gt 0 ]; then
+message "ERROR: Unable to rest SYSADMIN password for application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+
+FNDCPASS apps/${APPSPASS} 0 Y system/${SYSPASS} ORACLE xxc ${APPSPASS} &> /tmp/passchg.log
+status_code=`grep -i ORA /tmp/passchg.log | wc -l`
+if [ $status_code -gt 0 ]; then
+message "ERROR: Unable to rest xxc password for application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+
+message "INFO: Update Password In EBS Domain for Application $TARGET_DB"
+##Update Password In EBS Domain
+
+{ echo $WLSPASS; echo $APPSPASS; } | sh $ADMIN_SCRIPTS_HOME/adadminsrvctl.sh start
+status_code=$?
+if [ $status_code -gt 0 ]; then
+message "ERROR: Failed to start Admin Server After Apps Password Change For application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+
+{ echo $WLSPASS; echo $APPSPASS; } | perl $FND_TOP/patch/115/bin/txkManageDBConnectionPool.pl -options=updateDSPassword -contextfile=$CONTEXT_FILE
+status_code=$?
+if [ $status_code -gt 0 ]; then
+message "ERROR: Failed to update Password in WLS Datasource For application $ORACLE_SID"
+echo -n 11
+exit 11
+fi
+
+message "INFO: Completed Resetting Application Passwords for Application $TARGET_DB"
+
+}
+
+
+if [ $ACTION == 'SOURCE_PREP' ]; then
+
+    case "$PHASE" in
+         SYNC_CUST)           sync_custapps_s3;;
+    esac
+fi
+
+if [ $ACTION == 'TARGET_PREP' ]; then
+
+    case "$PHASE" in
+         SYNC_CUST)           sync_s3_custapps;;
+         STOP_APPS)              stop_apps;;
+         START_APPS)             start_apps;;
+         AUTOCONFIG)		 start_autoconfig;;
+         APPSPASSCHG)            start_passwordchange;;
+         
+    esac
+fi
+
+echo -n 0
+exit 0

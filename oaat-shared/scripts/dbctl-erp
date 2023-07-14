@@ -1,0 +1,978 @@
+#!/bin/ksh
+##############################################################################
+#            DBCTL SCRIPT                                                    #
+#                                                                            #  
+#Purpose:                                                                    # 
+#       Enable Backup Mode                                                   #                 
+#       Create Controlfile Script and Copy to S3 Bucket                      # 
+#       Disable Backup Mode						     #
+#       Rename Database	                                                     #
+#       Run target Script                                                    # 
+##############################################################################
+#set -x
+
+. ./common_env
+
+LOG_FILE=$SCRIPT_DIR/logs/"erp_clone_log_"`date +%Y%m%d%H%M`".log"
+EC2_REGION="`aws ec2 describe-availability-zones --output text --query 'AvailabilityZones[0].[RegionName]'`"
+
+USAGE="dbctl-erp -source_db <SOURCEDB_SID> -target_db <TARGETDB_SID> -action <SOURCE_PREP/TARGET_PREP> -phase <ENABLE_BKP_MODE/DISABLE_BKP_MODE/GEN_CTL_FILE/STOP_DB/RENAMEDB/START_DB/PREAUTOCONFIG/AUTOCONFIG/SCRAMBLE/RUN_POSTSCRIPT>"
+
+USAGE2="dbctl-erp -source_db <SOURCEDB_SID> -target_db <TARGETDB_SID> -action <SOURCE_PREP/TARGET_PREP> -phase <ENABLE_BKP_MODE/DISABLE_BKP_MODE/GEN_CTL_FILE/STOP_DB/RENAMEDB/START_DB/PREAUTOCONFIG/AUTOCONFIG/SCRAMBLE/RUN_POSTSCRIPT> -srcpass <PASSWORD>"
+
+##Read Arguments Passed
+
+PREAUTOCFG=0
+
+if [ "$1" == "" ] || [ "$2" == "" ] || [ "$3" == "" ] || [ "$4" == "" ] || [ "$5" == "" ] || [ "$6" == "" ] || [ "$7" == "" ] || [ "$8" == "" ]; then
+   message "ERROR: Not all arguments are passed"
+   message "Usage is: $USAGE"
+   echo -n 11
+   exit 11
+else
+   if [ "$8" == "PREAUTOCONFIG" ]; then
+        if [ "$9" == "" ] || [ "$10" == "" ]; then
+           message "ERROR: Pass the Source APPS Password"
+           message "Usage is: $USAGE2"
+           echo -n 11
+           exit 11
+        fi
+       PREAUTOCFG=1
+
+        if [ "$9" != "-srcpass" ]; then
+           message "ERROR: Only -srcpass should be passed as flag for PREAUTOCONFIG phase" 
+           echo -n 11
+           exit 11
+        fi
+   fi
+
+   while [ "$1" != "" ]; do
+      case $1 in
+         -source_db)		SOURCE_DB=$2; shift 2;;
+         -target_db)		TARGET_DB=$2; shift 2;;
+         -action)		ACTION=$2;    shift 2;;
+         -phase)                PHASE=$2;     shift 2;;
+         -srcpass)              SRCPASS=$2;   shift 2;;
+          *)                    message "ERROR: Invalid argument ($1).... exiting."; echo -n 11; exit 11;;
+      esac
+   done
+   if [ $ACTION == 'SOURCE_PREP' ]; then
+     ORACLE_SID=$SOURCE_DB
+     export SOURCE_DB
+     export ORACLE_SID
+   else
+     ORACLE_SID=$TARGET_DB
+     export TARGET_DB 
+     export ORACLE_SID     
+   fi
+
+fi
+
+if [ $ACTION != 'SOURCE_PREP' ] && [ $ACTION != 'TARGET_PREP' ]; then
+    message "ERROR: action can only be SOURCE_PREP or TARGET_PREP"
+    echo -n 11
+    exit 11
+
+fi
+
+if [ $ACTION == 'SOURCE_PREP' ]; then
+   if [ $PHASE != 'ENABLE_BKP_MODE' ] && [ $PHASE != 'DISABLE_BKP_MODE' ] && [ $PHASE != 'GEN_CTL_FILE' ]; then
+      message "ERROR: SOURCE_PREP action can only have phases ENABLE_BKP_MODE or DISABLE_BKP_MODE or GEN_CTL_FILE"
+      echo -n 11
+      exit 11
+   fi
+fi
+
+if [ $ACTION == 'TARGET_PREP' ]; then
+   if [ $PHASE != 'STOP_DB' ] && [ $PHASE != 'START_DB' ] && [ $PHASE != 'RENAMEDB' ] && [ $PHASE != 'AUTOCONFIG' ] && [ $PHASE != 'PREAUTOCONFIG' ] && [ $PHASE != 'SCRAMBLE' ] && [ $PHASE != 'RUN_POSTSCRIPT' ]; then
+      message "ERROR: TARGET_PREP action can only have phases STOP_DB/START_DB/RENAMEBD/AUTOCONFIG/PREAUTOCONFIG/SCRAMBLE/RUN_POSTSCRIPT"
+      echo -n 11
+      exit 11
+   fi
+
+    PSPARAM=$(aws secretsmanager get-secret-value --secret-id R12-${TARGET_DB}-Secret --query SecretString --region $EC2_REGION | tr -d '"' | tr -d '{' | tr -d '}'| sed 's/\\:/|/g'|sed 's/\\//g'|cut -d'|' -f2)
+
+    if [ ! ${PSPARAM} ];
+    then
+      message "ERROR: Could not fetch password from secret R12-${TARGET_DB}-Secret. Check if the Secret is Created with all the required passwords."
+      echo -n 11
+      exit 11
+    fi
+
+
+    SYSPASS=`echo $PSPARAM|cut -d":" -f1`
+
+    if [ ! ${SYSPASS} ];
+    then
+      message "ERROR: Could not fetch system password from secret R12-${TARGET_DB}-Secret. Ensure the system password is store in the 1st position in the secret."
+      echo -n 11
+      exit 11
+    fi
+    
+    APPSPASS=`echo $PSPARAM|cut -d":" -f2`
+
+    if [ ! ${APPSPASS} ];
+    then
+      message "ERROR: Could not fetch apps password from secret R12-${TARGET_DB}-Secret. Ensure the apps password is store in the 2nd position in the secret."
+      echo -n 11
+      exit 11
+    fi
+fi
+
+if [ `cat /etc/oratab | grep -w $ORACLE_SID | wc -l` -gt 0 ]
+then
+    ORAENV_ASK=NO
+    . oraenv -s
+    status_code=$?
+        if [ $status_code -gt 0 ]; then
+           message "ERROR: Unable to set environment for databse $ORACLE_SID"
+           echo -n 11
+           exit 11
+        fi 
+    DATA_TOP=$ERP_DATA_TOP
+    ARCH_TOP=$ERP_ARCH_TOP
+    SOURCE_DIR=$SOURCE_DB
+    TARGET_DIR=$TARGET_DB
+    SOURCE_DIR_TMP=`echo $SOURCE_DB| sed 's/^C//g'`
+    TARGET_DIR_TMP=`echo $TARGET_DB| sed 's/^C//g'`
+
+    if [ -f apptab ]; then
+       SOURCE_PDB=`cat apptab | grep -w ${SOURCE_DB} |tail -1 | cut -d':' -f2`
+       if [ ! ${SOURCE_PDB} ]; then
+          message "ERROR: apptab file does not have complete details of ${SOURCE_DB}"
+          echo -n 11
+          exit 11
+       fi
+
+
+      TARGET_PDB=`cat apptab | grep -w ${TARGET_DB} |tail -1 | cut -d':' -f2`
+      if [ ! ${TARGET_PDB} ]; then
+         message "ERROR: apptab file does not have complete details of ${TARGET_DB}"
+         echo -n 11
+         exit 11
+      fi
+    else
+      message "ERROR: apptab file does not exist, check if the file is copied from S3 bucket"
+      echo -n 11
+      exit 11
+    fi
+
+    REDO1=${DATA_TOP}/${TARGET_PDB}/oradata_${TARGET_DB}
+    REDO2=${DATA_TOP}/${TARGET_PDB}/orafra_${TARGET_DB}
+    S3BUCKET=$ERP_S3_BUCKET
+else
+   message "ERROR: Database $ORACLE_SID entry does not exist in oratab. Restart clone process after adding entry in oratab"
+   echo -n 11
+   exit 11
+fi
+
+function enable_bkp_mode
+{
+
+#set -x
+message "INFO: Working on enabling Backup Mode for database $ORACLE_SID"
+
+BACKUP="V\$BACKUP"
+bkpstatus=`sqlplus -s / as sysdba << EOF
+set heading off
+set feedback off
+set echo off
+whenever sqlerror exit 4
+whenever oserror exit 1
+select /*+ PARALLEL(2) */count(*) from ${BACKUP} where status='ACTIVE';
+exit
+EOF`
+
+status_code=$?
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Database Backup Mode Cannot be Enabled. Check if database is up and running"
+echo -n 11
+exit 11
+fi
+
+if [ $bkpstatus == 0 ]; then
+
+sqlplus -s / as sysdba << EOF
+set heading off
+set feedback off
+set echo off
+whenever sqlerror exit 4
+whenever oserror exit 11
+alter system archive log current;
+alter system checkpoint;
+alter database begin backup;
+exit
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Database Backup Mode Cannot be Enabled"
+echo -n 11
+exit 11
+else
+message "INFO: Backup Mode Successfully Enabled for database $ORACLE_SID"
+fi
+
+else
+message "INFO: Database is already in backup mode. Check if some other process has enabled the backup mode."
+fi
+
+}
+
+#enable_bkp_mode
+
+function disable_bkp_mode
+{
+
+#set -x
+
+message "INFO: Working on disabling Backup Mode for database $ORACLE_SID"
+
+BACKUP="V\$BACKUP"
+bkpstatus=`sqlplus -s / as sysdba << EOF
+set heading off
+set feedback off
+set echo off
+whenever sqlerror exit 4
+whenever oserror exit 1
+select /*+ PARALLEL(2) */count(*) from ${BACKUP} where status='ACTIVE';
+exit
+EOF`
+
+if [ $bkpstatus -gt 0 ]; then
+
+sqlplus -s / as sysdba << EOF
+set heading off
+set feedback off
+set echo off
+whenever sqlerror exit 4
+whenever oserror exit 11
+alter database end backup;
+exit
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Database Backup Mode Cannot be Disabled"
+echo -n 11
+exit 11
+else
+message "INFO: Backup Mode Successfully Disabled for database $ORACLE_SID"
+fi
+
+else
+message "INFO: Database is already not in backup mode."
+fi
+
+
+}
+
+function gen_controlfile
+{
+
+message "INFO: Working on generating controlfile script for database ${TARGET_DB}"
+
+echo "
+set time on
+set timing on
+WHENEVER SQLERROR EXIT 4 
+WHENEVER OSERROR EXIT 11
+spool $SCRIPT_DIR/${TARGET_DB}_ccf.lst
+STARTUP NOMOUNT
+CREATE CONTROLFILE SET DATABASE $ORACLE_SID RESETLOGS ARCHIVELOG
+   MAXLOGFILES 32
+   MAXLOGMEMBERS 5
+   MAXDATAFILES 2000
+   MAXINSTANCES 8
+   MAXLOGHISTORY 7303
+LOGFILE
+   GROUP 1 (
+     '$REDO1/redo01a.log',
+     '$REDO2/redo01b.log'
+   ) SIZE 2000M BLOCKSIZE 512,
+   GROUP 2 (
+     '$REDO1/redo02a.log',
+     '$REDO2/redo02b.log'
+   ) SIZE 2000M BLOCKSIZE 512,
+   GROUP 3 (
+     '$REDO1/redo03a.log',
+     '$REDO2/redo03b.log'
+   ) SIZE 2000M BLOCKSIZE 512,
+   GROUP 4 (
+     '$REDO1/redo04a.log',
+     '$REDO2/redo04b.log'
+   ) SIZE 2000M BLOCKSIZE 512,
+   GROUP 5 (
+     '$REDO1/redo05a.log',
+     '$REDO2/redo05b.log'
+   ) SIZE 2000M BLOCKSIZE 512
+DATAFILE" > $SCRIPT_DIR/${TARGET_DB}_ccf.sql
+
+sqlplus -s "/ as sysdba" >> $SCRIPT_DIR/${TARGET_DB}_ccf.sql <<EOF
+WHENEVER SQLERROR EXIT 4
+set echo off
+set pagesize 0
+set feedback off
+set heading off
+set TERMOUT off
+set linesize 200
+col file# noprint
+select file#, ''''||NAME||''',' col1
+from v\$datafile
+where file# != (select max(file#) from v\$datafile)
+union
+select file#, ''''||Name||''' CHARACTER SET ' || (select value from NLS_DATABASE_PARAMETERS where parameter='NLS_CHARACTERSET')||';' col1
+from v\$datafile
+where file# = (select max(file#) from v\$datafile)
+order by file#;
+exit
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Failed to create controlfile from ${SOURCE_DB}."
+echo -n 11
+exit 11
+else
+message "INFO: Controlfile created for ${TARGET_DB}."
+fi
+
+echo "ALTER DATABASE OPEN RESETLOGS;
+
+ALTER TABLESPACE TEMP ADD TEMPFILE '${DATA_TOP}/${TARGET_PDB}/oradata_${TARGET_DB}/temp01.dbf'
+SIZE 30G REUSE AUTOEXTEND OFF;
+" >>$SCRIPT_DIR/${TARGET_DB}_ccf.sql
+
+sed -i 's/'${SOURCE_PDB}'/'${TARGET_PDB}'/g' ${SCRIPT_DIR}/${TARGET_DB}_ccf.sql
+
+echo "--Rename PDB
+alter session set container = "\"CDB\$ROOT"\";
+alter pluggable database "\"${SOURCE_PDB}"\" unplug into '/usr/tmp/${SOURCE_PDB}_METADATA.xml';
+drop pluggable database "\"${SOURCE_PDB}"\" keep datafiles;
+create pluggable database "\"${TARGET_PDB}"\" using '/usr/tmp/${SOURCE_PDB}_METADATA.xml' tempfile reuse nocopy SERVICE_NAME_CONVERT=('ebs_${SOURCE_PDB}','ebs_${TARGET_PDB}','${SOURCE_PDB}_ebs_patch','${TARGET_PDB}_ebs_patch');
+alter pluggable database "\"${TARGET_PDB}"\" open;
+alter pluggable database "\"${TARGET_PDB}"\" save state;
+alter session set container = "\"${TARGET_PDB}"\";
+ALTER TABLESPACE TEMP ADD TEMPFILE '${DATA_TOP}/${TARGET_PDB}/temp01.dbf'
+SIZE 2000M REUSE AUTOEXTEND OFF;
+ALTER TABLESPACE TEMP ADD TEMPFILE '${DATA_TOP}/${TARGET_PDB}/temp02.dbf'
+SIZE 2000M REUSE AUTOEXTEND OFF;
+alter session set container = "\"PDB\$SEED"\";
+ALTER TABLESPACE TEMP ADD TEMPFILE '${DATA_TOP}/${TARGET_PDB}/oradata_${TARGET_DB}/pdbseed/temp012022-06-27_22-58-12-864-PM.dbf'
+SIZE 30G REUSE AUTOEXTEND OFF;
+spool off;" >> $SCRIPT_DIR/${TARGET_DB}_ccf.sql
+
+sed -i 's/'${ORACLE_SID}'/'${TARGET_DB}'/g' ${SCRIPT_DIR}/${TARGET_DB}_ccf.sql
+
+
+aws s3 cp $SCRIPT_DIR/${TARGET_DB}_ccf.sql $S3BUCKET --profile operations 2>&1 > /dev/null
+
+status_code=$?
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Failed to copy controlfile ${TARGET_DB}_ccf.sql to S3 bucket $S3BUCKET"
+echo -n 11
+exit 11
+else
+message "INFO: Controlfile ${TARGET_DB}_ccf.sql and copied to S3 bucket $S3BUCKET"
+fi
+
+}
+
+function stop_database
+{
+
+#set -x
+message "INFO: Stopping database $ORACLE_SID"
+
+if [ `ps -ef | grep pmon | grep $ORACLE_SID | wc -l` -gt 0 ]; then
+
+sqlplus -s / as sysdba << EOF
+set heading off
+set feedback off
+set echo off
+whenever sqlerror exit 4
+whenever oserror exit 11
+shut immediate;
+exit
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Database Shutdown Failed"
+echo -n 11
+exit 11
+else
+message "INFO: Database shutdown successfully - $ORACLE_SID"
+fi
+else
+message "INFO: Database shutdown successfully - $ORACLE_SID"
+fi
+
+lsnrctl stop $ORACLE_SID
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Database Listener Shutdown Failed"
+echo -n 11
+exit 11
+else
+message "INFO: Database listener shutdown successfully - $ORACLE_SID"
+fi
+
+}
+
+function start_database
+{
+
+#set -x
+message "INFO: Starting database $ORACLE_SID"
+
+sqlplus -s / as sysdba << EOF
+set heading off
+set feedback off
+set echo off
+whenever sqlerror exit 4
+whenever oserror exit 11
+startup;
+exit
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Database Startup Failed"
+echo -n 11
+exit 11
+else
+message "INFO: Database started successfully - $ORACLE_SID"
+fi
+
+lsnrctl start $ORACLE_SID
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Database Listener startup failed"
+echo -n 11
+exit 11
+else
+message "INFO: Database listener startup successfully - $ORACLE_SID"
+fi
+
+}
+
+function start_autoconfig
+{
+
+#set -x
+message "INFO: Starting Autoconfig for database $ORACLE_SID"
+
+CONTEXT=`echo ${TARGET_PDB}_${ERP_DBNODE}|cut -d"." -f1`
+ENVFILE=${CONTEXT}.env
+
+if [ -f ${ORACLE_HOME}/${ENVFILE} ]; then
+   . $ORACLE_HOME/$ENVFILE
+else
+   message "ERROR: Environment file $ENVFILE does not exist"
+fi
+
+if [ $PREAUTOCFG == 1 ]; then
+
+#Cleanup FND_NODES
+sqlplus -s apps/${SRCPASS}@${TARGET_PDB} << EOF
+WHENEVER OSERROR EXIT 68;
+WHENEVER SQLERROR EXIT SQL.SQLCODE;
+exec fnd_conc_clone.setup_clean;
+commit;
+EOF
+
+sleep 30
+
+#Cleanup FND_NODES
+sqlplus -s apps/${SRCPASS}@${TARGET_PDB} << EOF
+WHENEVER OSERROR EXIT 68;
+WHENEVER SQLERROR EXIT SQL.SQLCODE;
+exec fnd_conc_clone.setup_clean;
+commit;
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "Error in cleaning up FND_NODES. Check the log and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully cleaned FND_NODES."
+fi
+
+   { echo $SRCPASS; }|perl $ORACLE_HOME/appsutil/bin/txkCfgUtlfileDir.pl -contextfile=$CONTEXT_FILE -oraclehome=$ORACLE_HOME -outdir=$ORACLE_HOME/appsutil/log -mode=getUtlFileDir -servicetype=onpremise    
+   
+   status_code=$?
+
+   if [ $status_code -gt 0 ]; then
+      message "ERROR: Failed to getUtlFileDir on database node $ORACLE_SID"
+      echo -n 11
+      exit 11
+   fi
+   
+   if [ -f $ORACLE_HOME/dbs/${TARGET_PDB}_utlfiledir.txt ]; then
+      
+      sed -i '/^#/d' $ORACLE_HOME/dbs/${TARGET_PDB}_utlfiledir.txt
+      sed -i '/^$/d' $ORACLE_HOME/dbs/${TARGET_PDB}_utlfiledir.txt
+      sed -i 's/'${SOURCE_PDB}'/'${TARGET_PDB}'/g' $ORACLE_HOME/dbs/${TARGET_PDB}_utlfiledir.txt
+     
+      while read line
+      do
+	if [ ! -d $line ]; then
+           mkdir -p $line
+        fi
+      done < $ORACLE_HOME/dbs/${TARGET_PDB}_utlfiledir.txt
+   else
+     message "ERROR: File ${TARGET_PDB}_utlfiledir.txt does not exist on database node $ORACLE_SID"
+   fi
+
+   { echo $SRCPASS; echo $SYSPASS; }|perl $ORACLE_HOME/appsutil/bin/txkCfgUtlfileDir.pl -contextfile=$CONTEXT_FILE -oraclehome=$ORACLE_HOME -outdir=$ORACLE_HOME/appsutil/log -mode=setUtlFileDir -servicetype=onpremise
+
+   status_code=$?
+
+   if [ $status_code -gt 0 ]; then
+      message "ERROR: Failed to setUtlFileDir on database node $ORACLE_SID"
+      echo -n 11
+      exit 11
+   fi
+
+
+   { echo $SRCPASS; }|sh $ORACLE_HOME/appsutil/scripts/${CONTEXT}/adautocfg.sh
+   { echo $SRCPASS; }|sh $ORACLE_HOME/appsutil/scripts/${CONTEXT}/adautocfg.sh
+else
+   { echo $APPSPASS; }|sh $ORACLE_HOME/appsutil/scripts/${CONTEXT}/adautocfg.sh
+fi
+
+status_code=$?
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Failed to run Autoconfig on database node $ORACLE_SID"
+echo -n 11
+exit 11
+else
+message "INFO: Database Autoconfig Completed Successfully for $ORACLE_SID"
+fi
+
+}
+
+function recover_db 
+{
+
+message "INFO: Generating initialization parameter file for ${SOURCE_DB}"
+
+echo "*.audit_trail='none'" > ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.db_block_size=8192" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.db_files=2000" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.sga_target=4G" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.pga_aggregate_target=2G" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.db_securefile='PERMITTED'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.db_writer_processes=8" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.diagnostic_dest='${ORACLE_HOME}/admin'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.enable_pluggable_database=true" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.event='10946 trace name context forever, level 8454144'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.global_names=FALSE" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.java_jit_enabled=FALSE" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.compatible='19.0.0.0.0'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.log_archive_dest='${DATA_TOP}/${SOURCE_PDB}'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.log_archive_format='${SOURCE_PDB}_%t_%s_%r.arc'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.audit_file_dest='${ORACLE_HOME}/admin'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.control_files='${DATA_TOP}/${SOURCE_PDB}/oradata_${SOURCE_DB}/control01.ctl'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.db_name='${SOURCE_DB}'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+echo "*.db_unique_name='${SOURCE_DB}'" >> ${ORACLE_HOME}/dbs/init${SOURCE_DB}.ora
+
+message "INFO: Generated initialization parameter file for ${SOURCE_DB}"
+
+ORACLE_SID=${SOURCE_DB}
+
+message "INFO: Mounting the target Database"
+
+sqlplus -s / as sysdba << EOF
+WHENEVER OSERROR EXIT 68;
+WHENEVER SQLERROR EXIT SQL.SQLCODE;
+STARTUP MOUNT;
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "Error in mounting Database. Check the log and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully mounted the database"
+fi
+
+##Disabling Backup Mode As System datafile would be in backup mode
+disable_bkp_mode
+
+
+message "INFO: Starting Database For Recovery"
+
+sqlplus -s / as sysdba << EOF
+WHENEVER OSERROR EXIT 68;
+WHENEVER SQLERROR EXIT SQL.SQLCODE;
+ALTER DATABASE OPEN;
+SHUTDOWN IMMEDIATE;
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "Error in Recovering Database. Check the log and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully recovered database and opened"
+fi
+
+}
+
+function rename_db
+{
+#set -x
+
+## Calling Recover Database Function.
+recover_db
+
+ORACLE_SID=${TARGET_DB}
+message "INFO: Starting to rename datafile filesystem for database $ORACLE_SID"
+
+cd ${DATA_TOP}
+mv ${SOURCE_PDB} ${TARGET_PDB}
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "ERROR: Error in renaming the folder under ${DATA_TOP}. Check and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully renamed the folder under ${DATA_TOP}."
+fi
+
+cd ${TARGET_PDB}
+mv oradata_${SOURCE_DB} oradata_${TARGET_DB}
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "ERROR: in renaming the folder under ${DATA_TOP}/oradata_${TARGET_DB}. Check and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully renamed the folder under ${DATA_TOP}/oradata_${TARGET_DB}."
+fi
+
+mv orafra_${SOURCE_DB} orafra_${TARGET_DB}
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "ERROR: in renaming the folder under ${DATA_TOP}/orafra_${TARGET_DB}. Check and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully renamed the folder under ${DATA_TOP}/orafra_${TARGET_DB}."
+fi
+
+
+message "INFO: Remove source controlfile from file system"
+
+for file in ${DATA_TOP}/${TARGET_PDB}/oradata_${TARGET_DB}/*.ctl;do
+mv "$file" "${DATA_TOP}/${TARGET_PDB}/oradata_${TARGET_DB}/$(basename "$file" .ctl).ctl_bkp"
+done
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+messsage "ERROR: in renaming the controlfile. Check and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully renamed the old controlfile."
+fi
+
+message "INFO: Copying controlfile creation script ${TARGET_DB}_ccf.sql from S3 bucket $S3BUCKET"
+
+aws s3 cp ${S3BUCKET}${TARGET_DB}_ccf.sql ${SCRIPT_DIR}/ --profile operations 2>&1 > /dev/null
+
+status_code=$?
+
+if [ $status_code -gt 0 ]; then
+message "ERROR: Failed to copy controlfile ${TARGET_DB}_ccf.sql from S3 bucket ${S3BUCKET}."
+echo -n 11
+exit 11
+else
+message "INFO: Controlfile ${TARGET_DB}_ccf.sql and copied from S3 bucket ${S3BUCKET}."
+fi
+
+message "INFO: Renaming the container and pluggable database"
+sqlplus -s / as sysdba << EOF
+WHENEVER OSERROR EXIT 68;
+WHENEVER SQLERROR EXIT SQL.SQLCODE;
+@${SCRIPT_DIR}/${TARGET_DB}_ccf.sql
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "Error in Changing Database Name. Check the log and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully renamed database and opened"
+fi
+
+##Disabling Backup Mode As System datafile would be in backup mode
+disable_bkp_mode
+
+message "INFO: Changing System and Sys passwords to earlier password."
+
+sqlplus -s / as sysdba << EOF
+WHENEVER OSERROR EXIT 68;
+WHENEVER SQLERROR EXIT SQL.SQLCODE;
+alter user sys identified by ${SYSPASS};
+alter user system identified by ${SYSPASS};
+
+declare
+  l_usr_cnt pls_integer := 0;
+  l_sql varchar2(32767);
+begin
+  EXECUTE IMMEDIATE 'ALTER SESSION SET CONTAINER = ${TARGET_PDB}';
+  l_sql := 'ALTER USER EBS_SYSTEM IDENTIFIED BY ${SYSPASS}';
+
+  select count(1)
+  into l_usr_cnt
+  from dba_users
+  where username = 'EBS_SYSTEM';
+
+    --Reset EBS_SYSTEM password if user exist.
+  if (l_usr_cnt > 0) then
+    execute immediate l_sql;
+  end if;
+
+end;
+/
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "Error in resetting the password. Check and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully renamed database and opened"
+fi
+
+}
+
+function scramble_data
+{
+
+message "INFO: Copying Scrambling Script from S3 bucket ${S3BUCKET}."
+
+if [ ! -d erp_scramble ]; then
+   mkdir erp_scramble
+else
+   rm -rf erp_scramble
+   mkdir erp_scramble
+fi
+
+aws s3 cp ${S3BUCKET}scramble_file.lst ./erp_scramble --profile operations
+status_code=$?
+if [ $status_code -gt 0 ]
+then
+message "ERROR: Failed to copy the scramble list file scramble_file.lst from S3 bucket ${S3BUCKET}."
+echo -n 11
+exit 11
+else
+message "INFO: Scramble list file scramble_file.lst copied successfully."
+fi
+
+
+while read file
+do
+aws s3 cp ${S3BUCKET}${file} ./erp_scramble --profile operations
+status_code=$?
+if [ $status_code -gt 0 ]
+then
+message "ERROR: Failed to copy the scramble script ${file} from S3 bucket ${S3BUCKET}."
+echo -n 11
+exit 11
+else
+message "INFO: Scramble script ${file} copied successfully."
+fi
+done < ./erp_scramble/scramble_file.lst
+
+message "INFO: Starting to Scramble Data in database ${ORACLE_SID}."
+
+while read file
+do
+spoolfile=`basename $file .sql`.lst
+
+sqlplus -s / as sysdba << EOF
+alter session set container="${TARGET_PDB}";
+set echo on;
+set timing on;
+spool erp_scramble/${spoolfile};
+@erp_scramble/${file};
+spool off;
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "Error in running scramble script ${file}. Check and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully ran scramble script ${file} in database ${TARGET_DB}."
+fi
+
+done < ./erp_scramble/scramble_file.lst
+
+message "INFO: Starting Database listener for  database ${TARGET_DB}."
+lsnrctl start ${TARGET_DB}
+sleep 60
+
+
+}
+
+function postclone_script
+{
+
+message "INFO: Copying Post Clone Script from S3 bucket ${S3BUCKET}."
+
+if [ ! -d erp_postclonescript ]; then
+   mkdir erp_postclonescript
+else
+   rm -rf erp_postclonescript
+   mkdir erp_postclonescript
+fi
+
+aws s3 cp ${S3BUCKET}postclonescript_file.lst ./erp_postclonescript --profile operations
+status_code=$?
+if [ $status_code -gt 0 ]
+then
+message "ERROR: Failed to copy the postclonescript file postclonescript_file.lst from S3 bucket ${S3BUCKET}."
+echo -n 11
+exit 11
+else
+message "INFO: Post clone scripts list file postclonescript_file.lst copied successfully."
+fi
+
+while read file
+do
+aws s3 cp ${S3BUCKET}${file} ./erp_postclonescript --profile operations
+status_code=$?
+if [ $status_code -gt 0 ]
+then
+message "ERROR: Failed to copy the postclone script ${file} from S3 bucket ${S3BUCKET}."
+echo -n 11
+exit 11
+else
+message "INFO: PostClone script ${file} copied successfully."
+fi
+done < ./erp_postclonescript/postclonescript_file.lst
+
+message "INFO: Starting to run postclone scripts in database ${ORACLE_SID}."
+
+while read file
+do
+
+extension=${file##*.}
+
+if [ $extension == 'sh' ]; then
+   sh erp_postclonescript/$file
+   
+   status_code=$?
+
+   if [ $status_code -gt 0 ]
+   then
+     message "Error in running postclone script ${file}. Check and fix"
+     echo -n 11
+     exit 11
+   else
+     message "INFO: Successfully ran postclone script ${file} in instance ${TARGET_DB}."
+   fi
+   
+elif [ $extension == 'sql' ]; then   
+
+spoolfile=`basename $file .sql`.lst
+
+sqlplus -s / as sysdba << EOF
+alter session set container="${TARGET_PDB}";
+set echo on;
+set timing on;
+spool erp_postclonescript/${spoolfile};
+@erp_postclonescript/${file};
+spool off;
+EOF
+
+status_code=$?
+
+if [ $status_code -gt 0 ]
+then
+message "Error in running postclone script ${file}. Check and fix"
+echo -n 11
+exit 11
+else
+message "INFO: Successfully ran postclone script ${file} in database ${TARGET_DB}."
+fi
+
+else
+   message "Error in running postclone script ${file}. Check and fix"
+   echo -n 11
+   exit 11
+fi
+
+done < ./erp_postclonescript/postclonescript_file.lst
+
+}
+
+if [ $ACTION == 'SOURCE_PREP' ]; then
+    
+    case "$PHASE" in
+         ENABLE_BKP_MODE)           enable_bkp_mode
+                                    gen_controlfile;;
+         DISABLE_BKP_MODE)          disable_bkp_mode;;
+         GEN_CTL_FILE)              gen_controlfile;; 
+    esac
+      
+fi
+
+if [ $ACTION == 'TARGET_PREP' ]; then
+
+    case "$PHASE" in
+         STOP_DB)           stop_database;; 
+         START_DB)          start_database;;
+         AUTOCONFIG)        start_autoconfig;;
+         PREAUTOCONFIG)     start_autoconfig;;
+         RENAMEDB)          rename_db;;
+         SCRAMBLE)          scramble_data;;
+         RUN_POSTSCRIPT)    postclone_script;;
+    esac
+
+fi
+
+echo -n 0
+exit 0

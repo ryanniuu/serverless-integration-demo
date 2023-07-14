@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Oracle Application Administration Toolbox
+       by the Oracle Applications on AWS team
+  
+# Parameters:
+#   yourEmail:
+#     Type: String
+#     Default:  youremail@yourdomain.com
+#     Description: >
+#       Your email address to be used to send out dummy emails from EventBridge rule & scheduler. 
+#       Need to add and then validate it from AWS Console --> Amazon SES --> Verified Identities. 
+#       Before validation completes, the Lambda function sending email shall fail.
+
+Resources:
+
+  oaatEventBus:
+      Type: "AWS::Events::EventBus"
+      Properties:
+          Name: "oaat-eventbus"
+
+  # SESEmailIdentity:   # there are regions that do not support this resource type yet, then you'll get deploy error "Template format error: Unrecognized resource types"
+  #     Type: AWS::SES::EmailIdentity
+  #     Properties:
+  #         EmailIdentity: !Ref yourEmail
+
+
+  SchedulerScheduleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/service-role/"
+      RoleName: "Amazon_EventBridge_Scheduler_Role_Lambda_Send_Email"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - scheduler.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      # Policies:
+      #   - PolicyName: "Amazon-EventBridge-Scheduler-Execution-Policy-Lambda-Send-Email"
+      #     PolicyDocument:
+      #       Version: "2012-10-17"
+      #       Statement:
+      #         - Effect: Allow
+      #           Action: "lambda:InvokeFunction"
+      #           Resource: !GetAtt LambdaDemoEmail.Arn
+
+
+  SchedulerSchedule:
+      Type: "AWS::Scheduler::Schedule"
+      Properties:
+          Name: "rule-demo-schedule"
+          Description: ""
+          State: "ENABLED"
+          GroupName: "default"
+          ScheduleExpression: "at(2023-05-01T21:35:00)"
+          ScheduleExpressionTimezone: "Australia/Sydney"
+          FlexibleTimeWindow: 
+              Mode: "OFF"
+          Target: 
+              Arn: !GetAtt LambdaDemoEmail.Arn
+              RetryPolicy: 
+                  MaximumEventAgeInSeconds: 86400
+                  MaximumRetryAttempts: 0
+              RoleArn: !GetAtt SchedulerScheduleRole.Arn  #RoleArn is not supported for Lambda, which is resource based permissions
+
+  PermissionForEventsSchedulerToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref LambdaDemoEmail
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt SchedulerSchedule.Arn
+
+
+
+  LambdaEBSStartApps: 
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/oaat-ebs-StartApps/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  LambdaEBSStartDB: 
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/oaat-ebs-StartDb/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  LambdaEBSStopApps: 
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/oaat-ebs-StopApps/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+  LambdaEBSStopDB: 
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/oaat-ebs-StopDb/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+
+
+
+  # StepFunDemoHR: #demo-hr-steps
+  #   Type: AWS::Serverless::StateMachine
+  #   Properties:
+  #     DefinitionUri: statemachine/demo-hr-steps.asl.json
+  #     DefinitionSubstitutions:
+  #       demoHRFunctionArn: !GetAtt LambdaDemoHR.Arn
+  #       DDBPutItem: !Sub arn:${AWS::Partition}:states:::dynamodb:putItem
+  #       DDBTable: !Ref TableDemoHR
+  #       demoPayrollStepFunctionArn: !Ref StepFunDemoPayroll
+  #     Policies:
+  #       - CloudWatchPutMetricPolicy: {}
+  #   Connectors:
+  #     stepFunctionConnectorHR:
+  #       Properties:
+  #         Destination: 
+  #           - Id: LambdaDemoHR
+  #         Permissions:
+  #           - Write
+  #     stepFunctionConnectorHR2:
+  #       Properties:
+  #         Destination: 
+  #           - Id: TableDemoHR
+  #           - Id: StepFunDemoPayroll
+  #         Permissions:
+  #           - Read
+  #           - Write
+
+#   TableDemoHR: #demo-tbl-hr
+#     Type: AWS::Serverless::SimpleTable
+#     Properties:
+#       TableName: demo-tbl-hr
+
+#   TableDemoPayroll: #demo-tbl-payroll
+#     Type: AWS::Serverless::SimpleTable
+#     Properties:
+#       TableName: demo-tbl-payroll
+
+#   TableDemoIT:  #demo-tbl-directory
+#     Type: AWS::Serverless::SimpleTable
+#     Properties:
+#       TableName: demo-tbl-directory
+
+# Outputs:
+#   ArnStateMachineDemoHR:
+#     Description: "Demo HR State machine ARN"
+#     Value: !Ref StepFunDemoHR
